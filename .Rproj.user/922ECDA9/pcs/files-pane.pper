@@ -1,0 +1,9 @@
+{
+    "path" : "~/R Scripts/PortfolioAllocation",
+    "sortOrder" : [
+        {
+            "ascending" : true,
+            "columnIndex" : 2
+        }
+    ]
+}

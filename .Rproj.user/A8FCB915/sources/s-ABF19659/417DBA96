@@ -1,0 +1,23 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1533730324085.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "3890567781",
+    "id" : "417DBA96",
+    "lastKnownWriteTime" : 1566634807,
+    "last_content_update" : 1566634807549,
+    "path" : "~/R Scripts/PortfolioAllocation/Main.R",
+    "project_path" : "Main.R",
+    "properties" : {
+        "cursorPosition" : "78,0",
+        "scrollLine" : "63",
+        "tempName" : "Untitled1"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

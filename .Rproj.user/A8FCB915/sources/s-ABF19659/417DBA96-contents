@@ -54,7 +54,7 @@ garch_mle<-function(lambda ,s ,dt ){
 }
 
 
-#Define constants
+#Define constant starting point
 lambda_start <- c(0.1,0.001,0.9,0.05,0.1,0.1)
 ui <- matrix(c(0,1,0,0,0,0, #beta0 LB
                0,0,1,0,0,0, #beta1 LB
@@ -68,18 +68,14 @@ ui <- matrix(c(0,1,0,0,0,0, #beta0 LB
 ci <- c(0,0,0,-1,-1,-1)
 cov <- cov(log_return)
 
-#Run Optimization and list the results
-res <- constrOptim(lambda_start,garch_mle, grad = NULL, ui = ui, ci = ci, s = log_return[,1], dt = dt )
-for (i in 2:ncol(log_return)) {
-  res <- list(res,  constrOptim(lambda_start,garch_mle, grad = NULL, ui = ui, ci = ci, s = log_return[,i], dt = dt ))
-}
+#Run Optimization of constants for each asset and list the results
 
-garch_params <- lapply(res, '[[','par')
+garch_params <- apply(log_return, 2, function(x) constrOptim(lambda_start,garch_mle, grad = NULL, ui = ui, ci = ci, s = x, dt = dt )$par)
 names(garch_params) <- stock_shortnames
 garch_params <- as_tibble(garch_params)
 
 ## Test 
-# Iterate over returns and calculate eps
+# Iterate over returns, calculate eps and qqplot
 eps <- matrix(,nrow = n_days_garch,ncol = length(stock_shortnames))
 for (j in 1:2){
   v <- integer(n_days_garch+1)
@@ -106,10 +102,10 @@ for (j in 1:2){
   qqline(eps[,j], main = stock_shortnames[j])
 }
 
-# Covariance from eps
+# Covariance from eps (Not long term solution, but helps in simulating the covariances of the stochastic processes)
 sigma = cov(eps)
 
-stock_sim <- function(){
+portfolio_sim <- function(){
   
 }
   
