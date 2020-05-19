@@ -15,60 +15,68 @@ library(tidyr)
 # src - Data source (Others than Yahoo might not work)
 # dt - Right now 1/255, might be changed to properly define time between asset prices
 
-
-asset_shortnames <- c("FB","AAPL", "CAP.PA")
+asset_shortnames <- c("FB","AAPL", "CAP.PA", "NDA-FI.HE", "ERIC")
+#asset_shortnames <- c("FB", "AAPL")
 current_weights <- c(0, 0, 0)
-n_days_garch <- 300
+n_days_garch <- 600
+n_days_simulation <- 365
+n_days_mc <- 365
+n_simulations_mc <- 1000
 src <- "yahoo"
-dt <- 1/255
+dt <- 1/252
 
 # Get asset data
 getSymbols(asset_shortnames, src=src)
 
 # List the asset close price xts
-close_prices <- lapply(asset_shortnames, function(x){asset <- get(x)
-asset[,4] # Only get Close price
-})
+close_prices <- sapply(asset_shortnames, function(x){asset <- get(x)
+asset <- asset[,4] #Only get Close price
+names(asset) <- x
+asset 
+}, USE.NAMES = TRUE)
 
 
-# Merge time series close prices
-close_prices <- do.call(merge, close_prices)
-names(close_prices) <- asset_shortnames
+# # Merge time series close prices
+# close_prices <- do.call(merge, close_prices)
+# names(close_prices) <- asset_shortnames
 
 # Log returns
-log_return <- log(close_prices/lag.xts(close_prices))
+log_return <- sapply(close_prices, function(x) na.omit(log(lag.xts(x, k = -1)/x)))
+log_return_simulation <- sapply( log_return, function(x) xts::last(x, paste(n_days_simulation, "days")), USE.NAMES = TRUE, simplify = FALSE)
+log_return <- sapply(log_return, function(x) xts::last(xts::last(x, paste("-", n_days_simulation, " days", sep = "")), paste(n_days_garch, "days")), USE.NAMES = TRUE, simplify = FALSE)
 
-# Negative MLE
+#MLE
 garch_mle<-function(lambda ,s ,dt ){
   # Param
-  mu=lambda[1]
-  beta0=lambda[2]
-  beta1=lambda[3]
-  beta2=lambda[4]
-  alpha1=lambda[5]
-  alpha2=lambda[6]
+  nu <- lambda[1]
+  beta0 <- lambda[2]
+  beta1 <- lambda[3]
+  beta2 <- lambda[4]
+  alpha1 <- lambda[5]
+  alpha2 <- lambda[6]
   
   # Initialisation
-  l=0
+  l <- 0
   v <- integer(length(s)+1)
-  v[1]=(sd(s)^2)*dt
-  
-  # Iterate over dt
+  v[1] <- (sd(s)^2)*dt
+
+  # Iterate over s
   for (i in 1:length(s)){
-    l <- l - 0.5*log(v[i]) - 0.5*(s[i] - mu*dt)^2/(v[i]*dt)
+    l <- l - 0.5*log(v[i]) - 0.5*(s[i] - nu*dt)^2/(v[i]*dt)
     
     if(s[i]<0){
-      v[i+1]<-beta0 + beta1*v[i] + beta2/dt*(s[i]-alpha1*dt)^2
+      v[i+1] <- beta0 + beta1*v[i] + beta2/dt*(s[i]-alpha1*dt)^2
     }else{
-      v[i+1]<-beta0 + beta1*v[i] + beta2/dt*(s[i]-alpha2*dt)^2
+      v[i+1] <- beta0 + beta1*v[i] + beta2/dt*(s[i]-alpha2*dt)^2
     }
   }
-  return(-l)
+  return(l)
 }
 
 
+
 #Define constant starting point
-lambda_start <- c(0.1,0.001,0.9,0.05,0.1,0.1)
+lambda_start <- c(0.1, 0.001, 0.9, 0.05, 0.1, 0.1)
 ui <- matrix(c(0,1,0,0,0,0, #beta0 LB
                0,0,1,0,0,0, #beta1 LB
                0,0,0,1,0,0, #beta2 LB
@@ -79,99 +87,167 @@ ui <- matrix(c(0,1,0,0,0,0, #beta0 LB
              byrow = TRUE
 )
 ci <- c(0,0,0,-1,-1,-1)
-cov <- cov(log_return)
+#cov <- cov(log_return)
 
+# Testing nu
+x <- log_return$FB
+x <- tail(log_return$FB,400)
+y <- constrOptim(lambda_start,
+            garch_mle, 
+            grad = NULL, 
+            ui = ui, 
+            ci = ci, 
+            s = coredata(x), 
+            dt = dt,
+            control = list(fnscale = -1))
+
+y
+optim(c(1,1),
+      function(lambda, x){
+        return(sum(-lambda[1]^2-(x-lambda[2])^2))}
+      ,x = x,
+      control = list(fnscale = -1)
+      
+  )
+
+optim(c(1,1),
+      function(lambda){
+        return(-(3-lambda[1])^2-(2-lambda[2])^2)
+        },
+      control = list(fnscale = -1)
+)
+##
 
 #Run Optimization of constants for each asset, for n_days_garch days, and list the results
-garch_params <- as.data.frame(t(apply(log_return, 2, function(x) constrOptim(lambda_start,
-                                                                             garch_mle, 
-                                                                             grad = NULL, 
-                                                                             ui = ui, 
-                                                                             ci = ci, 
-                                                                             s = tail(na.omit(x), n_days_garch), 
-                                                                             dt = dt )$par)))
-colnames(garch_params) <- c("mu", "beta0", "beta1", "beta2", "alpha1", "alpha2")
+garch_params <- t(sapply(log_return, 
+                         function(x) constrOptim(lambda_start,
+                                                 garch_mle, 
+                                                 grad = NULL, 
+                                                 ui = ui, 
+                                                 ci = ci, 
+                                                 s = coredata(x), 
+                                                 dt = dt,
+                                                 control = list(fnscale = -1))$par,
+                         USE.NAMES = TRUE))
+
+colnames(garch_params) <- c("nu", "beta0", "beta1", "beta2", "alpha1", "alpha2")
 
 
 ## Test 
-# Iterate over returns, calculate eps and qqplot
-eps <- matrix(,nrow = n_days_garch,ncol = length(asset_shortnames))
-for (j in length(asset_shortnames)){
-  v <- integer(n_days_garch+1)
-  v[1]=(sd(log_return[,j])^2)*dt
-  
-  mu=garch_params[[j]][1]
-  beta0=garch_params[[j]][2]
-  beta1=garch_params[[j]][3]
-  beta2=garch_params[[j]][4]
-  alpha1=garch_params[[j]][5]
-  alpha2=garch_params[[j]][6]
-  
-  for (i in 1:n_days_garch){
-    (log_return[i,j]-mu*dt)/(sqrt(v[i]*dt))
-    eps[i,j] <- (log_return[i,j]-mu*dt)/(sqrt(v[i]*dt))
-    
-    if(log_return[i,j]<0){
-      v[i+1]<-beta0 + beta1*v[i] + beta2/dt*(log_return[i]-alpha1*dt)^2
-    }else{
-      v[i+1]<-beta0 + beta1*v[i] + beta2/dt*(log_return[i]-alpha2*dt)^2
-    }
-  }
-}
-
-eps <- apply(log_return, 2, function(x){
-  x <- na.omit(log_return[,1])
+# Iterate over garch returns, calculate eps and qqplot
+v_simulation_start <- setNames(data.frame(matrix(ncol = length(asset_shortnames), nrow = 1)), asset_shortnames)
+eps <- sapply(log_return, function(x){
+  #Get asset name
   asset_name <- names(x)
-  x$v <- (sd(x,na.rm = TRUE)^2)*dt
-  x$eps <- (x[]-mu*dt)/(sqrt(x$v*dt))
   
-  mu <- garch_params[asset_name,"mu"]
+  # Get garch params for specific asset
+  nu <- garch_params[asset_name,"nu"]
   beta0 <- garch_params[asset_name,"beta0"]
   beta1 <- garch_params[asset_name,"beta1"]
   beta2 <- garch_params[asset_name,"beta2"]
   alpha1 <- garch_params[asset_name,"alpha1"]
   alpha2 <- garch_params[asset_name,"alpha2"]
   
+  # Initiate v, eps, and set v to the its start value (daily vol of garch period)
+  v <- integer(length(x)+1)
+  eps <- integer(length(x))
+  v[1] <- (sd(x)^2)*dt
   
-  x <- x %>%
-    mutate()
-  
-  apply(na.omit(x), 1, function(y){
-    if(y[1]<0){
-      lead(y[2])<-beta0 + beta1*y[2] + beta2/dt*(y[1]-alpha1*dt)^2
+  # Iterate over x and calculate eps[x] and v[i+1]
+  for (i in 1:(length(x))){
+    eps[i] <- (x[i]-nu*dt)/(sqrt(v[i]*dt))
+    if(x[i, asset_name] < 0){
+      v[i+1] <- beta0 + beta1*v[i] + beta2/dt*(x[i, asset_name]-alpha1*dt)^2
     }else{
-      lead(y[2])<-beta0 + beta1*y[2] + beta2/dt*(y[1]-alpha2*dt)^2
-    }
-  })
-  
-  
-})
-
-  for (i in 1:n_days_garch){
-    (log_return[i,j]-mu*dt)/(sqrt(v[i]*dt))
-    eps[i,j] <- (log_return[i,j]-mu*dt)/(sqrt(v[i]*dt))
-    
-    if(log_return[i,j]<0){
-      v[i+1]<-beta0 + beta1*v[i] + beta2/dt*(log_return[i]-alpha1*dt)^2
-    }else{
-      v[i+1]<-beta0 + beta1*v[i] + beta2/dt*(log_return[i]-alpha2*dt)^2
+      v[i+1]<-beta0 + beta1*v[i] + beta2/dt*(x[i, asset_name]-alpha2*dt)^2
     }
   }
-})
+  
+  # Set v simulation start value to the last v from garch period and return eps
+  v_simulation_start[asset_name] <<- last(v)
+  return(eps)
+},USE.NAMES = TRUE)
 
 eps <- as.data.frame(eps)
-names(eps) <- asset_shortnames
-eps <- gather(eps, stock_shortnames, key="asset",value = "eps")
-ggplot(eps, aes(sample = eps, colour = factor(asset))) + geom_qq() + geom_qq_line() + facet_wrap(. ~ asset, nrow = floor(length(asset_shortnames)))
+eps <- pivot_longer(eps, asset_shortnames, names_to = "asset", values_to = "eps")
+ggplot(eps, aes(sample = eps, colour = factor(asset))) + geom_qq() + geom_qq_line() + facet_wrap(. ~ asset, nrow = ceiling(length(asset_shortnames)/2)) + ggtitle("Garch return QQ-plot")
 
-# Covariance from eps (Not long term solution, but helps in simulating the covariances of the stochastic processes)
-sigma = cov(eps)
+# Iterate over simulation returns, calculate eps and qqplot
+v_estimation_start <- integer(length(asset_shortnames))
+names(v_estimation_start) <- asset_shortnames
 
-portfolio_sim <- function(){
+eps_simulation <- sapply(log_return_simulation, function(x){
+  asset_name <- names(x)
   
+  # Get garch params for specific asset
+  nu <- garch_params[asset_name,"nu"]
+  beta0 <- garch_params[asset_name,"beta0"]
+  beta1 <- garch_params[asset_name,"beta1"]
+  beta2 <- garch_params[asset_name,"beta2"]
+  alpha1 <- garch_params[asset_name,"alpha1"]
+  alpha2 <- garch_params[asset_name,"alpha2"]
+  
+  # Initiate v, eps, and set v to the its start value (end of garch period)
+  v <- integer(length(x)+1)
+  eps <- integer(length(x))
+  v[1] <- v_simulation_start[[asset_name]]
+  
+  # Iterate over x and calculate eps[x] and v[i+1]
+  for (i in 1:(length(x))){
+      eps[i] <- (x[i]-nu*dt)/(sqrt(v[i]*dt))
+    if(x[i, asset_name] < 0){
+      v[i+1] <- beta0 + beta1*v[i] + beta2/dt * (x[i, asset_name] - alpha1 * dt)^2
+    }else{
+      v[i+1]<-beta0 + beta1*v[i] + beta2 / dt * (x[i, asset_name] - alpha2 * dt)^2
+    }
+  }
+  
+  # Set v estimation start value to the last v from simulation period and return eps
+  v_estimation_start[asset_name] <<- last(v)
+  return(eps)
+},USE.NAMES = TRUE)
+
+eps_simulation <- as.data.frame(eps_simulation) 
+cov_eps_simulation <- cov(eps_simulation) # Covariance from eps (Not long term solution, but helps in simulating the covariances of the stochastic processes)
+eps_simulation <- pivot_longer(eps_simulation, asset_shortnames, names_to = "asset", values_to = "eps")
+ggplot(eps_simulation, aes(sample = eps, colour = factor(asset))) + geom_qq() + geom_qq_line() + facet_wrap(. ~ asset, nrow = ceiling(length(asset_shortnames)/2)) + ggtitle("Simulation return QQ-plot")
+
+
+## Simulate purchases and (hopefully) profits
+# Initiate variables
+mu_hat <- array(NA, dim = c(n_simulations_mc, length(asset_shortnames), n_days_mc), dimnames = list(NULL, asset_shortnames, NULL))
+v <- array(NA, dim = c(n_simulations_mc, length(asset_shortnames), n_days_mc +1), dimnames = list(NULL, asset_shortnames, NULL))
+
+
+v[,,1] <- rep(v_estimation_start, each = nrow(v[,,1]-1))
+
+mu_hat[,,1]
+mu_hat[,,1] <- garch_params[,"nu"] * dt + eps * sqrt(v[,,1] * dt)
+
+for (i in 1:nrow(v[,,1])) {
+  for (j in dimnames(v)[[2]]) {
+   if(mu_hat[i,j,1] < 0){
+     v[i,j,2] <- garch_params[j,"beta0"] + garch_params[j,"beta1"] * v[i,j,1] + garch_params[j,"beta2"]/dt * (mu_hat[i,j,1] - garch_params[j,"alpha1"] * dt)^2
+   }else{
+     v[i,j,2] <- garch_params[j,"beta0"] + garch_params[j,"beta1"] * v[i,j,1] + garch_params[j,"beta2"]/dt * (mu_hat[i,j,1] - garch_params[j,"alpha2"] * dt)^2
+   } 
+  }
 }
-  
-#simulate 
+
+
+for (t in  1:n_days_mc) {
+  eps <- rmvnorm(n_simulations_mc, sigma = cov_eps_simulation)
+  for (i in 1:nrow(v[,,t])) {
+    for (j in 1:ncol(v[,,t])) {
+      mu_hat[i,j,t] <- garch_params[j,"nu"] * dt + eps[i,j] * sqrt(v[i,j,t] * dt)
+      if(mu_hat[i,j,t] < 0){
+        v[i,j,t+1] <- garch_params[j,"beta0"] + garch_params[j,"beta1"] * v[i,j,t] + garch_params[j,"beta2"]/dt * (mu_hat[i,j,t] - garch_params[j,"alpha1"] * dt)^2
+      }else{
+        v[i,j,t+1] <- garch_params[j,"beta0"] + garch_params[j,"beta1"] * v[i,j,t] + garch_params[j,"beta2"]/dt * (mu_hat[i,j,t] - garch_params[j,"alpha2"] * dt)^2
+      } 
+    }
+  }
+}
 
 
 #nu=lambda[1]
